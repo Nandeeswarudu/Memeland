@@ -43,6 +43,7 @@ jobs:
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # Only commit the small files.
           git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
@@ -52,12 +53,11 @@ jobs:
 
           git commit -m "scanner: save findings and progress [skip ci]"
 
-          # Get the newest remote state before pushing.
+          # Get the newest remote state.
           git fetch origin main
 
-          # If another run pushed while this job was scanning,
-          # rebase our commit onto the newest main.
+          # Rebase our progress onto the newest main.
           git rebase origin/main
 
-          # Push the updated history.
+          # Push.
           git push origin HEAD:main
