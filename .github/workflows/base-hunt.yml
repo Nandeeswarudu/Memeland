@@ -34,7 +34,7 @@ jobs:
         run: |
           python -u scripts/run_chunk.py \
             --max-blocks "${{ inputs.max_blocks || '1000' }}" \
-            --rpc-range 50 \
+            --rpc-range 5 \
             --rpc-url "$BASE_RPC_URL"
 
       - name: Save findings and progress
