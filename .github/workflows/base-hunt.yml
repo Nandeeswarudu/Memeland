@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Scan the next Base block range
-        run: python -u scripts/run_chunk.py --max-blocks "10" --rpc-range 10
+        run: python -u scripts/run_chunk.py --max-blocks "500" --rpc-range 50
       - name: Save findings and progress
         if: always()
         run: |
