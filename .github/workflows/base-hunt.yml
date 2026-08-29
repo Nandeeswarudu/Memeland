@@ -25,8 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Scan the next Base block range
-        run: python scripts/run_chunk.py --max-blocks "${{ inputs.max_blocks || '5000' }}"
+        run: python -u scripts/run_chunk.py --max-blocks "${{ inputs.max_blocks || '5000' }}"
       - name: Save findings and progress
+        if: always()
         run: |
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
