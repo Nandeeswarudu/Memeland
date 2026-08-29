@@ -41,7 +41,7 @@ jobs:
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add data
+          git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
             echo "No changes to commit."
@@ -62,14 +62,12 @@ jobs:
               fi
             else
               echo "Rebase conflict detected."
-
               git rebase --abort || true
 
-              echo "Refreshing from origin/main..."
               git fetch origin main
-
-              # Re-apply our data changes on top of the latest main.
               git reset --soft origin/main
+
+              git add data/state.json data/shortlist.json
 
               if git diff --staged --quiet; then
                 echo "No changes remain after synchronization."
