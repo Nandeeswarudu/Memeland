@@ -88,7 +88,7 @@ def inspect_candidate(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-blocks", type=int, default=500)
-    parser.add_argument("--rpc-range", type=int, default=200)
+    parser.add_argument("--rpc-range", type=int, default=50)
     parser.add_argument("--rpc-url", default=DEFAULT_RPC)
     args = parser.parse_args()
 
