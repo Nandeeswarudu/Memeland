@@ -24,10 +24,16 @@ jobs:
     timeout-minutes: 12
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Scan the next Base block range
-        run: python -u scripts/run_chunk.py --max-blocks "${{ inputs.max_blocks || '1000' }}" --rpc-range 50
+        run: |
+          python -u scripts/run_chunk.py \
+            --max-blocks "${{ inputs.max_blocks || '1000' }}" \
+            --rpc-range 50
 
       - name: Save findings and progress
         if: always()
@@ -44,5 +50,38 @@ jobs:
 
           git commit -m "scanner: save findings and progress [skip ci]"
 
-          git pull --rebase origin main
-          git push origin main
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt $attempt..."
+
+            git fetch origin main
+
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                echo "Successfully pushed changes."
+                exit 0
+              fi
+            else
+              echo "Rebase conflict detected."
+
+              git rebase --abort || true
+
+              echo "Refreshing from origin/main..."
+              git fetch origin main
+
+              # Re-apply our data changes on top of the latest main.
+              git reset --soft origin/main
+
+              if git diff --staged --quiet; then
+                echo "No changes remain after synchronization."
+                exit 0
+              fi
+
+              git commit -m "scanner: save findings and progress [skip ci]"
+            fi
+
+            echo "Attempt $attempt failed. Retrying in 2 seconds..."
+            sleep 2
+          done
+
+          echo "ERROR: Failed to push after 5 attempts."
+          exit 1
