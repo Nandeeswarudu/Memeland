@@ -3,7 +3,13 @@ name: Base hunt scanner
 on:
   schedule:
     - cron: '*/5 * * * *'
+
   workflow_dispatch:
+    inputs:
+      max_blocks:
+        description: 'Blocks to scan in this run'
+        required: false
+        default: '1000'
 
 permissions:
   contents: write
@@ -21,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Scan the next Base block range
-        run: python -u scripts/run_chunk.py --max-blocks "500" --rpc-range 50
+        run: python -u scripts/run_chunk.py --max-blocks "${{ inputs.max_blocks || '1000' }}" --rpc-range 50
 
       - name: Save findings and progress
         if: always()
@@ -35,6 +41,7 @@ jobs:
             echo "No changes to commit."
             exit 0
           fi
+
           git commit -m "scanner: save findings and progress [skip ci]"
 
           git pull --rebase origin main
