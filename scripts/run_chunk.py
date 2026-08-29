@@ -57,13 +57,13 @@ def inspect_candidate(
     transaction_hash: str,
     block_number: int,
     rpc_url: str,
+    transaction: dict,
 ) -> dict | None:
     receipt = rpc(rpc_url, "eth_getTransactionReceipt", [transaction_hash])
     if not receipt or (receipt.get("contractAddress") or "").lower() != contract:
         return None
     if not is_exactly_one_constructor_mint(receipt, contract):
         return None
-    transaction = rpc(rpc_url, "eth_getTransactionByHash", [transaction_hash])
     creator = transaction["from"].lower()
     if int(rpc(rpc_url, "eth_getTransactionCount", [creator, "latest"]), 16) != 1:
         return None
@@ -87,7 +87,7 @@ def inspect_candidate(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max-blocks", type=int, default=5000)
+    parser.add_argument("--max-blocks", type=int, default=500)
     parser.add_argument("--rpc-range", type=int, default=200)
     parser.add_argument("--rpc-url", default=DEFAULT_RPC)
     args = parser.parse_args()
@@ -108,6 +108,8 @@ def main() -> int:
 
     shortlist = load_json(SHORTLIST, [])
     known_contracts = {item["contract"] for item in shortlist}
+    checked_contracts: set[str] = set()
+    transactions: dict[str, dict | None] = {}
 
     with EVENTS.open("a", encoding="utf-8") as event_file:
         while current <= end:
@@ -135,13 +137,29 @@ def main() -> int:
                     "block_number": int(log["blockNumber"], 16),
                 }
                 event_file.write(json.dumps(event) + "\n")
-                if contract not in known_contracts:
+                # Almost every mint is from an existing collection.  The hunt
+                # pattern is a brand-new contract with its single NFT minted
+                # during deployment, so avoid expensive receipt/metadata calls
+                # unless this transaction is actually a contract creation.
+                if contract not in known_contracts and contract not in checked_contracts:
+                    checked_contracts.add(contract)
+                    transaction = transactions.get(event["transaction_hash"])
+                    if event["transaction_hash"] not in transactions:
+                        transaction = rpc(
+                            args.rpc_url,
+                            "eth_getTransactionByHash",
+                            [event["transaction_hash"]],
+                        )
+                        transactions[event["transaction_hash"]] = transaction
+                    if not transaction or transaction.get("to") is not None:
+                        continue
                     candidate = inspect_candidate(
                         contract,
                         token_id,
                         event["transaction_hash"],
                         event["block_number"],
                         args.rpc_url,
+                        transaction,
                     )
                     if candidate:
                         shortlist.append(candidate)
