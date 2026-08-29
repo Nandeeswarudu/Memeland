@@ -50,36 +50,4 @@ jobs:
 
           git commit -m "scanner: save findings and progress [skip ci]"
 
-          for attempt in 1 2 3 4 5; do
-            echo "Push attempt $attempt..."
-
-            git fetch origin main
-
-            if git rebase origin/main; then
-              if git push origin HEAD:main; then
-                echo "Successfully pushed changes."
-                exit 0
-              fi
-            else
-              echo "Rebase conflict detected."
-              git rebase --abort || true
-
-              git fetch origin main
-              git reset --soft origin/main
-
-              git add data/state.json data/shortlist.json
-
-              if git diff --staged --quiet; then
-                echo "No changes remain after synchronization."
-                exit 0
-              fi
-
-              git commit -m "scanner: save findings and progress [skip ci]"
-            fi
-
-            echo "Attempt $attempt failed. Retrying in 2 seconds..."
-            sleep 2
-          done
-
-          echo "ERROR: Failed to push after 5 attempts."
-          exit 1
+          git push origin HEAD:main
