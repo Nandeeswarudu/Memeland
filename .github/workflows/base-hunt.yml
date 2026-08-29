@@ -26,7 +26,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Scan the next Base block range
         env:
@@ -43,8 +43,7 @@ jobs:
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Only commit the small files.
-          git add data/state.json data/shortlist.json
+          git add data
 
           if git diff --staged --quiet; then
             echo "No changes to commit."
@@ -53,11 +52,4 @@ jobs:
 
           git commit -m "scanner: save findings and progress [skip ci]"
 
-          # Get the newest remote state.
-          git fetch origin main
-
-          # Rebase our progress onto the newest main.
-          git rebase origin/main
-
-          # Push.
           git push origin HEAD:main
