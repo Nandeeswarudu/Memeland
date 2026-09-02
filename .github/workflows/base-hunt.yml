@@ -44,35 +44,34 @@ jobs:
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          echo "=== Git status before saving ==="
+          echo "=== Git status before commit ==="
           git status --short
 
-          # Only persist these scanner files.
+          # Persist only the scanner state and shortlist.
           git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
-            echo "No changes to state or shortlist."
+            echo "No changes to commit."
           else
             git commit -m "scanner: save findings and progress [skip ci]"
           fi
 
-          echo "=== Git status after commit ==="
+          # Remove generated files that are intentionally not persisted.
+          # contract_creation_cache.json is rebuilt automatically next run.
+          rm -f data/contract_creation_cache.json
+
+          # Make absolutely sure the working tree is clean before rebase.
+          git reset --hard HEAD
+          git clean -fd
+
+          echo "=== Git status before rebase ==="
           git status --short
 
-          # Preserve any remaining working-tree changes so the rebase
-          # cannot fail because of unstaged files.
-          if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-            echo "Stashing remaining working-tree changes..."
-            git stash push -u -m "scanner runtime changes"
-          else
-            echo "Working tree is clean."
-          fi
-
-          echo "=== Fetching latest main ==="
+          # Get the latest main branch.
           git fetch origin main
 
-          echo "=== Rebasing onto origin/main ==="
+          # Rebase scanner progress onto the latest remote state.
           git rebase origin/main
 
-          echo "=== Pushing scanner progress ==="
+          # Push updated state.
           git push origin HEAD:main
