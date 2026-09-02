@@ -3,6 +3,7 @@ name: Base hunt scanner
 on:
   schedule:
     - cron: '*/5 * * * *'
+
   workflow_dispatch:
     inputs:
       max_blocks:
@@ -43,22 +44,35 @@ jobs:
           git config user.name "base-hunt-scanner[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Only commit the files that need to persist between runs.
-          # DO NOT add data/mint_events.jsonl.
+          echo "=== Git status before saving ==="
+          git status --short
+
+          # Only persist these scanner files.
           git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
-            echo "No changes to commit."
-            exit 0
+            echo "No changes to state or shortlist."
+          else
+            git commit -m "scanner: save findings and progress [skip ci]"
           fi
 
-          git commit -m "scanner: save findings and progress [skip ci]"
+          echo "=== Git status after commit ==="
+          git status --short
 
-          # Get the latest main branch.
+          # Preserve any remaining working-tree changes so the rebase
+          # cannot fail because of unstaged files.
+          if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "Stashing remaining working-tree changes..."
+            git stash push -u -m "scanner runtime changes"
+          else
+            echo "Working tree is clean."
+          fi
+
+          echo "=== Fetching latest main ==="
           git fetch origin main
 
-          # Rebase our scanner progress onto the latest remote state.
+          echo "=== Rebasing onto origin/main ==="
           git rebase origin/main
 
-          # Push the updated state.
+          echo "=== Pushing scanner progress ==="
           git push origin HEAD:main
