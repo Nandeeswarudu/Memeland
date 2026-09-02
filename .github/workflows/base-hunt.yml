@@ -31,11 +31,12 @@ jobs:
       - name: Scan the next Base block range
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+          BASE_RPC_FALLBACK_URLS: >-
+            https://base.api.onfinality.io/public,
+            https://base-rpc.publicnode.com,
+            https://base-mainnet.public.blastapi.io
         run: |
-          python -u scripts/run_chunk.py \
-            --max-blocks "${{ inputs.max_blocks || '10000' }}" \
-            --rpc-range 5 \
-            --rpc-url "$BASE_RPC_URL"
+          python -u scripts/run_chunk.py             --max-blocks "${{ inputs.max_blocks || '10000' }}"             --rpc-range 5             --rpc-url "$BASE_RPC_URL"
 
       - name: Save findings and progress
         if: always()
@@ -48,7 +49,6 @@ jobs:
           echo "=== Git status before commit ==="
           git status --short
 
-          # Persist only scanner state and shortlist.
           git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
@@ -57,10 +57,8 @@ jobs:
             git commit -m "scanner: save findings and progress [skip ci]"
           fi
 
-          # Remove generated runtime files that are intentionally not persisted.
           rm -f data/contract_creation_cache.json
 
-          # Ensure the working tree/index are clean.
           git reset --hard HEAD
           git clean -fd
           git update-index --refresh
@@ -68,14 +66,6 @@ jobs:
           echo "=== Git status before sync ==="
           git status --short
 
-          # Get the latest main branch.
           git fetch origin main
-
-          # Merge latest remote main instead of rebasing.
-          # The scanner's newly committed state/shortlist wins if those
-          # files conflict, preventing the historical scan position from
-          # being overwritten by another main-branch update.
           git merge origin/main --no-edit -X ours
-
-          # Push the combined result.
           git push origin HEAD:main
