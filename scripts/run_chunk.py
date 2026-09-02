@@ -586,7 +586,7 @@ def main() -> int:
     args = parser.parse_args()
 
     rpc_urls = parse_rpc_urls(
-        rpc_urls,
+        args.rpc_url,
         os.environ.get("BASE_RPC_FALLBACK_URLS"),
     )
 
