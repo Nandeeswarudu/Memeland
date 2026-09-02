@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -89,73 +90,91 @@ def http_json(url: str, *, method: str = "GET", body: Any | None = None) -> Any:
         return json.loads(response.read().decode())
 
 
-def rpc_retry(rpc_url: str, method: str, params: list[Any]) -> Any:
-    max_attempts = 8
+def parse_rpc_urls(primary: str | None, fallback_env: str | None = None) -> list[str]:
+    urls: list[str] = []
 
-    for attempt in range(max_attempts):
-        try:
-            return rpc(rpc_url, method, params)
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        for part in value.split(","):
+            part = part.strip()
+            if part and part not in urls:
+                urls.append(part)
 
-        except urllib.error.HTTPError as error:
-            if error.code == 429:
-                retry_after = error.headers.get("Retry-After")
-                try:
-                    delay = float(retry_after) if retry_after else 0.0
-                except (TypeError, ValueError):
-                    delay = 0.0
+    add(primary)
+    add(fallback_env)
 
-                delay = max(delay, min(60.0, 3.0 * (2 ** attempt)))
+    # Public Base fallbacks.
+    for value in (
+        "https://base.api.onfinality.io/public",
+        "https://base-rpc.publicnode.com",
+        "https://base-mainnet.public.blastapi.io",
+    ):
+        add(value)
 
-                if attempt == max_attempts - 1:
-                    print(
-                        f"RPC HTTP 429 persisted for {method}; "
-                        f"aborting this run so the block range can be retried.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+    if not urls:
+        raise RuntimeError("No Base RPC URLs configured.")
+
+    return urls
+
+
+def rpc_retry(rpc_urls: list[str], method: str, params: list[Any]) -> Any:
+    # Fail over immediately on 429/5xx/connection errors instead of waiting
+    # minutes on one rate-limited provider.
+    max_cycles = 2
+    last_error: Exception | None = None
+
+    for cycle in range(max_cycles):
+        for index, rpc_url in enumerate(rpc_urls):
+            try:
+                return rpc(rpc_url, method, params)
+            except urllib.error.HTTPError as error:
+                last_error = error
+                if error.code not in (429, 500, 502, 503, 504):
                     raise
-
                 print(
-                    f"RPC HTTP 429 for {method}; waiting {delay:.1f}s "
-                    f"(attempt {attempt + 1}/{max_attempts})",
+                    f"RPC HTTP {error.code} for {method} on "
+                    f"{index + 1}/{len(rpc_urls)}: {rpc_url}; "
+                    "switching provider",
                     file=sys.stderr,
                     flush=True,
                 )
-                time.sleep(delay)
-                continue
+            except Exception as error:
+                last_error = error
+                print(
+                    f"RPC error for {method} on "
+                    f"{index + 1}/{len(rpc_urls)}: {error}; "
+                    "switching provider",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
-            if attempt == max_attempts - 1:
-                raise
+        if cycle < max_cycles - 1:
+            time.sleep(2.0)
 
-            delay = min(30.0, 2.0 * (2 ** attempt))
-            time.sleep(delay)
-
-        except Exception:
-            if attempt == max_attempts - 1:
-                raise
-            time.sleep(min(30.0, 2.0 * (attempt + 1)))
-
+    if last_error:
+        raise last_error
     raise RuntimeError(f"RPC failed: {method}")
 
 
-def block_by_number(rpc_url: str, block_number: int, full_transactions: bool = False) -> dict:
+def block_by_number(rpc_urls: str, block_number: int, full_transactions: bool = False) -> dict:
     return rpc_retry(
-        rpc_url,
+        rpc_urls,
         "eth_getBlockByNumber",
         [hex(block_number), full_transactions],
     )
 
 
-def transaction_by_hash(rpc_url: str, transaction_hash: str) -> dict | None:
-    return rpc_retry(rpc_url, "eth_getTransactionByHash", [transaction_hash])
+def transaction_by_hash(rpc_urls: str, transaction_hash: str) -> dict | None:
+    return rpc_retry(rpc_urls, "eth_getTransactionByHash", [transaction_hash])
 
 
-def receipt_by_hash(rpc_url: str, transaction_hash: str) -> dict | None:
-    return rpc_retry(rpc_url, "eth_getTransactionReceipt", [transaction_hash])
+def receipt_by_hash(rpc_urls: str, transaction_hash: str) -> dict | None:
+    return rpc_retry(rpc_urls, "eth_getTransactionReceipt", [transaction_hash])
 
 
-def code_at_block(rpc_url: str, contract: str, block_number: int) -> str:
-    return rpc_retry(rpc_url, "eth_getCode", [contract, hex(block_number)])
+def code_at_block(rpc_urls: str, contract: str, block_number: int) -> str:
+    return rpc_retry(rpc_urls, "eth_getCode", [contract, hex(block_number)])
 
 
 def normalize_address(value: str | None) -> str:
@@ -185,9 +204,9 @@ def mint_event_from_log(log: dict) -> dict:
     }
 
 
-def get_mint_logs(rpc_url: str, start_block: int, end_block: int) -> list[dict]:
+def get_mint_logs(rpc_urls: str, start_block: int, end_block: int) -> list[dict]:
     result = rpc_retry(
-        rpc_url,
+        rpc_urls,
         "eth_getLogs",
         [{
             "fromBlock": hex(start_block),
@@ -199,7 +218,7 @@ def get_mint_logs(rpc_url: str, start_block: int, end_block: int) -> list[dict]:
 
 
 def find_creation_block(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     upper_block: int,
 ) -> int | None:
@@ -208,7 +227,7 @@ def find_creation_block(
     if upper_block < 0:
         return None
 
-    latest_code = code_at_block(rpc_url, contract, upper_block)
+    latest_code = code_at_block(rpc_urls, contract, upper_block)
     if not latest_code or latest_code == "0x":
         return None
 
@@ -217,7 +236,7 @@ def find_creation_block(
 
     while low < high:
         middle = (low + high) // 2
-        code = code_at_block(rpc_url, contract, middle)
+        code = code_at_block(rpc_urls, contract, middle)
 
         if code and code != "0x":
             high = middle
@@ -228,11 +247,11 @@ def find_creation_block(
 
 
 def find_creation_transaction(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     creation_block: int,
 ) -> tuple[str, dict] | None:
-    block = block_by_number(rpc_url, creation_block, True)
+    block = block_by_number(rpc_urls, creation_block, True)
     contract = normalize_address(contract)
 
     for tx in block.get("transactions", []):
@@ -240,7 +259,7 @@ def find_creation_transaction(
             continue
 
         tx_hash = tx["hash"]
-        receipt = receipt_by_hash(rpc_url, tx_hash)
+        receipt = receipt_by_hash(rpc_urls, tx_hash)
 
         if not receipt:
             continue
@@ -254,7 +273,7 @@ def find_creation_transaction(
 
 
 def get_creation_info(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     mint_block: int,
     cache: dict,
@@ -265,7 +284,7 @@ def get_creation_info(
         return cache[contract]
 
     creation_block = find_creation_block(
-        rpc_url,
+        rpc_urls,
         contract,
         mint_block,
     )
@@ -275,7 +294,7 @@ def get_creation_info(
         return None
 
     creation = find_creation_transaction(
-        rpc_url,
+        rpc_urls,
         contract,
         creation_block,
     )
@@ -299,7 +318,7 @@ def get_creation_info(
 
 
 def get_all_mints_for_contract(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     start_block: int,
     end_block: int,
@@ -313,7 +332,7 @@ def get_all_mints_for_contract(
         stop = min(current + chunk_size - 1, end_block)
 
         logs = rpc_retry(
-            rpc_url,
+            rpc_urls,
             "eth_getLogs",
             [{
                 "fromBlock": hex(current),
@@ -418,11 +437,11 @@ def transaction_funded_by(
 
 
 def inspect_token(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     token_id: int,
 ) -> dict:
-    uri = token_uri(rpc_url, contract, token_id)
+    uri = token_uri(rpc_urls, contract, token_id)
     token_metadata = metadata(uri) if uri else None
 
     description = (
@@ -442,7 +461,7 @@ def inspect_token(
 
 
 def inspect_candidate(
-    rpc_url: str,
+    rpc_urls: str,
     contract: str,
     mint_event: dict,
     creation_info: dict,
@@ -470,7 +489,7 @@ def inspect_candidate(
     creator = normalize_address(creation_info["creator"])
     mint_to = normalize_address(mint_event["minted_to"])
 
-    if not erc721(rpc_url, contract):
+    if not erc721(rpc_urls, contract):
         return None
 
     funding = None
@@ -487,7 +506,7 @@ def inspect_candidate(
             return None
 
     token = inspect_token(
-        rpc_url,
+        rpc_urls,
         contract,
         mint_event["token_id"],
     )
@@ -534,7 +553,8 @@ def main() -> int:
 
     parser.add_argument(
         "--rpc-url",
-        default=DEFAULT_RPC,
+        default=None,
+        help="Primary Base RPC URL; comma-separated URLs are also accepted.",
     )
 
     parser.add_argument(
@@ -565,6 +585,16 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    rpc_urls = parse_rpc_urls(
+        rpc_urls,
+        os.environ.get("BASE_RPC_FALLBACK_URLS"),
+    )
+
+    print("RPC pool:")
+    for i, url in enumerate(rpc_urls, 1):
+        print(f"  {i}. {url}")
+    print(flush=True)
+
     DATA.mkdir(exist_ok=True)
 
     funded_by = None
@@ -579,7 +609,7 @@ def main() -> int:
 
     latest = int(
         rpc_retry(
-            args.rpc_url,
+            rpc_urls,
             "eth_blockNumber",
             [],
         ),
@@ -639,7 +669,7 @@ def main() -> int:
 
             try:
                 logs = get_mint_logs(
-                    args.rpc_url,
+                    rpc_urls,
                     chunk_start,
                     stop,
                 )
@@ -701,7 +731,7 @@ def main() -> int:
 
                 if mint_tx_hash not in transactions:
                     transaction = transaction_by_hash(
-                        args.rpc_url,
+                        rpc_urls,
                         mint_tx_hash,
                     )
                     transactions[mint_tx_hash] = transaction
@@ -719,7 +749,7 @@ def main() -> int:
                 )
 
                 creation_info = get_creation_info(
-                    args.rpc_url,
+                    rpc_urls,
                     contract,
                     event["block_number"],
                     creation_cache,
@@ -758,7 +788,7 @@ def main() -> int:
 
                 try:
                     candidate = inspect_candidate(
-                        args.rpc_url,
+                        rpc_urls,
                         contract,
                         event,
                         creation_info,
