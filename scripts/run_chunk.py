@@ -435,15 +435,29 @@ def inspect_candidate(
     all_mints = None
 
     if verify_full_mint_history:
+        # The hunt requires the contract to have minted exactly ONE NFT
+        # during its entire lifetime. Start at the actual deployment block,
+        # not at the hunt-wide scan start.
         all_mints = get_all_mints_for_contract(
             rpc_url,
             contract,
-            mint_scan_start,
+            creation_info["block_number"],
             mint_scan_end,
             mint_scan_chunk_size,
         )
 
         if len(all_mints) != 1:
+            return None
+
+        # The only lifetime mint must be the mint event that produced
+        # this candidate.
+        only_mint = all_mints[0]
+
+        if (
+            only_mint["transaction_hash"].lower()
+            != mint_event["transaction_hash"].lower()
+            or only_mint["token_id"] != mint_event["token_id"]
+        ):
             return None
 
     token = inspect_token(
@@ -478,6 +492,16 @@ def inspect_candidate(
             "deployment_nonce_zero": True,
             "one_zero_address_mint": (
                 len(all_mints) == 1
+                if all_mints is not None
+                else None
+            ),
+            "only_lifetime_mint_is_candidate": (
+                (
+                    len(all_mints) == 1
+                    and all_mints[0]["transaction_hash"].lower()
+                    == mint_event["transaction_hash"].lower()
+                    and all_mints[0]["token_id"] == mint_event["token_id"]
+                )
                 if all_mints is not None
                 else None
             ),
