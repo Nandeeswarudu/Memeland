@@ -57,23 +57,20 @@ ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 def load_json(path: Path, fallback):
-    """Load JSON safely; treat an empty file as the fallback value."""
     if not path.exists():
         return fallback
 
-    raw = path.read_text(encoding="utf-8").strip()
+    text = path.read_text(encoding="utf-8").strip()
 
-    # An empty JSON file is not valid JSON. This commonly happens when
-    # shortlist.json is cleared manually before a fresh backfill.
-    if not raw:
+    if not text:
         return fallback
 
     try:
-        return json.loads(raw)
+        return json.loads(text)
     except json.JSONDecodeError as error:
         raise RuntimeError(
             f"Invalid JSON in {path}: {error}. "
-            f"Replace it with valid JSON (for an empty shortlist use [])."
+            f"Use valid JSON such as [] or {{}}."
         ) from error
 
 
@@ -96,13 +93,75 @@ def http_json(url: str, *, method: str = "GET", body: Any | None = None) -> Any:
 
 
 def rpc_retry(rpc_url: str, method: str, params: list[Any]) -> Any:
-    for attempt in range(4):
+    # Base RPC providers can temporarily return HTTP 429 when the scanner
+    # makes many historical eth_getCode / eth_getLogs requests. Do not treat
+    # a rate limit as a candidate rejection: retry with exponential backoff.
+    max_attempts = 8
+
+    for attempt in range(max_attempts):
         try:
             return rpc(rpc_url, method, params)
-        except Exception:
-            if attempt == 3:
+
+        except urllib.error.HTTPError as error:
+            if error.code != 429:
+                if attempt == max_attempts - 1:
+                    raise
+                delay = min(30.0, 2.0 * (2 ** attempt))
+                print(
+                    f"RPC HTTP {error.code} for {method}; "
+                    f"retrying in {delay:.1f}s "
+                    f"(attempt {attempt + 1}/{max_attempts})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(delay)
+                continue
+
+            retry_after = error.headers.get("Retry-After")
+            try:
+                delay = float(retry_after) if retry_after else 0.0
+            except (TypeError, ValueError):
+                delay = 0.0
+
+            # Exponential backoff if the provider does not give Retry-After.
+            delay = max(
+                delay,
+                min(60.0, 3.0 * (2 ** attempt)),
+            )
+
+            if attempt == max_attempts - 1:
+                print(
+                    f"RPC rate limit persisted for {method} after "
+                    f"{max_attempts} attempts; aborting this scan run. "
+                    f"The current block range will be retried on the next run.",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 raise
-            time.sleep(1.5 * (attempt + 1))
+
+            print(
+                f"RPC HTTP 429 for {method}; "
+                f"waiting {delay:.1f}s before retry "
+                f"(attempt {attempt + 1}/{max_attempts})",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+
+        except Exception as error:
+            if attempt == max_attempts - 1:
+                raise
+
+            delay = min(30.0, 2.0 * (attempt + 1))
+            print(
+                f"RPC error for {method}: {error}; "
+                f"retrying in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{max_attempts})",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+
     raise RuntimeError(f"RPC failed: {method}")
 
 
@@ -452,9 +511,9 @@ def inspect_candidate(
     all_mints = None
 
     if verify_full_mint_history:
-        # The hunt requires the contract to have minted exactly ONE NFT
-        # during its entire lifetime. Start at the actual deployment block,
-        # not at the hunt-wide scan start.
+        # The hunt requires exactly ONE NFT minted during the contract's
+        # entire lifetime. Therefore the lifetime scan starts at the actual
+        # deployment block, not at the hunt-wide scan start.
         all_mints = get_all_mints_for_contract(
             rpc_url,
             contract,
@@ -466,8 +525,7 @@ def inspect_candidate(
         if len(all_mints) != 1:
             return None
 
-        # The only lifetime mint must be the mint event that produced
-        # this candidate.
+        # The sole lifetime mint must be this candidate's mint event.
         only_mint = all_mints[0]
 
         if (
