@@ -59,12 +59,9 @@ ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 def load_json(path: Path, fallback):
     if not path.exists():
         return fallback
-
     text = path.read_text(encoding="utf-8").strip()
-
     if not text:
         return fallback
-
     try:
         return json.loads(text)
     except json.JSONDecodeError as error:
@@ -93,9 +90,6 @@ def http_json(url: str, *, method: str = "GET", body: Any | None = None) -> Any:
 
 
 def rpc_retry(rpc_url: str, method: str, params: list[Any]) -> Any:
-    # Base RPC providers can temporarily return HTTP 429 when the scanner
-    # makes many historical eth_getCode / eth_getLogs requests. Do not treat
-    # a rate limit as a candidate rejection: retry with exponential backoff.
     max_attempts = 8
 
     for attempt in range(max_attempts):
@@ -103,13 +97,26 @@ def rpc_retry(rpc_url: str, method: str, params: list[Any]) -> Any:
             return rpc(rpc_url, method, params)
 
         except urllib.error.HTTPError as error:
-            if error.code != 429:
+            if error.code == 429:
+                retry_after = error.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 0.0
+                except (TypeError, ValueError):
+                    delay = 0.0
+
+                delay = max(delay, min(60.0, 3.0 * (2 ** attempt)))
+
                 if attempt == max_attempts - 1:
+                    print(
+                        f"RPC HTTP 429 persisted for {method}; "
+                        f"aborting this run so the block range can be retried.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     raise
-                delay = min(30.0, 2.0 * (2 ** attempt))
+
                 print(
-                    f"RPC HTTP {error.code} for {method}; "
-                    f"retrying in {delay:.1f}s "
+                    f"RPC HTTP 429 for {method}; waiting {delay:.1f}s "
                     f"(attempt {attempt + 1}/{max_attempts})",
                     file=sys.stderr,
                     flush=True,
@@ -117,50 +124,16 @@ def rpc_retry(rpc_url: str, method: str, params: list[Any]) -> Any:
                 time.sleep(delay)
                 continue
 
-            retry_after = error.headers.get("Retry-After")
-            try:
-                delay = float(retry_after) if retry_after else 0.0
-            except (TypeError, ValueError):
-                delay = 0.0
-
-            # Exponential backoff if the provider does not give Retry-After.
-            delay = max(
-                delay,
-                min(60.0, 3.0 * (2 ** attempt)),
-            )
-
-            if attempt == max_attempts - 1:
-                print(
-                    f"RPC rate limit persisted for {method} after "
-                    f"{max_attempts} attempts; aborting this scan run. "
-                    f"The current block range will be retried on the next run.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                raise
-
-            print(
-                f"RPC HTTP 429 for {method}; "
-                f"waiting {delay:.1f}s before retry "
-                f"(attempt {attempt + 1}/{max_attempts})",
-                file=sys.stderr,
-                flush=True,
-            )
-            time.sleep(delay)
-
-        except Exception as error:
             if attempt == max_attempts - 1:
                 raise
 
-            delay = min(30.0, 2.0 * (attempt + 1))
-            print(
-                f"RPC error for {method}: {error}; "
-                f"retrying in {delay:.1f}s "
-                f"(attempt {attempt + 1}/{max_attempts})",
-                file=sys.stderr,
-                flush=True,
-            )
+            delay = min(30.0, 2.0 * (2 ** attempt))
             time.sleep(delay)
+
+        except Exception:
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(min(30.0, 2.0 * (attempt + 1)))
 
     raise RuntimeError(f"RPC failed: {method}")
 
@@ -481,18 +454,23 @@ def inspect_candidate(
     mint_scan_end: int,
     mint_scan_chunk_size: int,
 ) -> dict | None:
+    """
+    Shortlist discovery filter.
+
+    A candidate must have:
+      1. An ERC-721 mint event (Transfer from zero address).
+      2. A real contract creation transaction.
+      3. A creator wallet funded by the targeted funding wallet
+         before or at deployment.
+
+    Lifetime one-of-one verification is intentionally NOT performed here.
+    It can be done later on the much smaller shortlist.
+    """
     contract = normalize_address(contract)
     creator = normalize_address(creation_info["creator"])
     mint_to = normalize_address(mint_event["minted_to"])
 
-    if mint_to != creator:
-        return None
-
     if not erc721(rpc_url, contract):
-        return None
-
-    # Deployment nonce 0 means this deployment was the creator's first tx.
-    if creation_info["nonce"] != 0:
         return None
 
     funding = None
@@ -508,33 +486,6 @@ def inspect_candidate(
         if funding is None:
             return None
 
-    all_mints = None
-
-    if verify_full_mint_history:
-        # The hunt requires exactly ONE NFT minted during the contract's
-        # entire lifetime. Therefore the lifetime scan starts at the actual
-        # deployment block, not at the hunt-wide scan start.
-        all_mints = get_all_mints_for_contract(
-            rpc_url,
-            contract,
-            creation_info["block_number"],
-            mint_scan_end,
-            mint_scan_chunk_size,
-        )
-
-        if len(all_mints) != 1:
-            return None
-
-        # The sole lifetime mint must be this candidate's mint event.
-        only_mint = all_mints[0]
-
-        if (
-            only_mint["transaction_hash"].lower()
-            != mint_event["transaction_hash"].lower()
-            or only_mint["token_id"] != mint_event["token_id"]
-        ):
-            return None
-
     token = inspect_token(
         rpc_url,
         contract,
@@ -546,44 +497,21 @@ def inspect_candidate(
         "creator": creator,
         "token_id": mint_event["token_id"],
         "minted_to": mint_to,
-
         "mint_transaction": mint_event["transaction_hash"],
         "mint_block_number": mint_event["block_number"],
-
         "deployment_transaction": creation_info["transaction_hash"],
         "deployment_block_number": creation_info["block_number"],
         "deployment_nonce": creation_info["nonce"],
-
         "token_uri": token["token_uri"],
         "name": token["name"],
         "description": token["description"],
         "claim_codes": token["claim_codes"],
-
         "funding": funding,
-
         "verification": {
             "erc721": True,
-            "mint_to_creator": True,
-            "deployment_nonce_zero": True,
-            "one_zero_address_mint": (
-                len(all_mints) == 1
-                if all_mints is not None
-                else None
-            ),
-            "only_lifetime_mint_is_candidate": (
-                (
-                    len(all_mints) == 1
-                    and all_mints[0]["transaction_hash"].lower()
-                    == mint_event["transaction_hash"].lower()
-                    and all_mints[0]["token_id"] == mint_event["token_id"]
-                )
-                if all_mints is not None
-                else None
-            ),
+            "contract_creation_found": True,
             "funded_by_required_wallet": (
-                funding is not None
-                if require_funder
-                else None
+                funding is not None if require_funder else None
             ),
         },
     }
@@ -836,9 +764,7 @@ def main() -> int:
                         creation_info,
                         require_funder=funded_by,
                         blockscout_url=args.blockscout_url,
-                        verify_full_mint_history=(
-                            not args.no_full_mint_check
-                        ),
+                        verify_full_mint_history=False,
                         mint_scan_start=args.mint_history_start,
                         mint_scan_end=latest,
                         mint_scan_chunk_size=args.rpc_range,
