@@ -3,7 +3,6 @@ name: Base hunt scanner
 on:
   schedule:
     - cron: '*/5 * * * *'
-
   workflow_dispatch:
     inputs:
       max_blocks:
@@ -38,7 +37,7 @@ jobs:
             --rpc-range 5 \
             --rpc-url "$BASE_RPC_URL"
 
-            - name: Save findings and progress
+      - name: Save findings and progress
         if: always()
         run: |
           set -e
@@ -49,29 +48,34 @@ jobs:
           echo "=== Git status before commit ==="
           git status --short
 
-          # Only persist scanner state and shortlist.
+          # Persist only scanner state and shortlist.
           git add data/state.json data/shortlist.json
 
           if git diff --staged --quiet; then
             echo "No changes to state or shortlist."
-            exit 0
+          else
+            git commit -m "scanner: save findings and progress [skip ci]"
           fi
 
-          git commit -m "scanner: save findings and progress [skip ci]"
+          # Remove generated runtime files that are intentionally not persisted.
+          rm -f data/contract_creation_cache.json
 
-          # Get latest remote state.
+          # Ensure the working tree/index are clean.
+          git reset --hard HEAD
+          git clean -fd
+          git update-index --refresh
+
+          echo "=== Git status before sync ==="
+          git status --short
+
+          # Get the latest main branch.
           git fetch origin main
 
-          # If main advanced while the scan was running, merge it.
-          # Keep the scanner's newly generated state/shortlist when
-          # those files conflict.
-          if ! git merge origin/main --no-edit \
-              -X ours; then
+          # Merge latest remote main instead of rebasing.
+          # The scanner's newly committed state/shortlist wins if those
+          # files conflict, preventing the historical scan position from
+          # being overwritten by another main-branch update.
+          git merge origin/main --no-edit -X ours
 
-            echo "Merge failed. Aborting."
-            git merge --abort
-            exit 1
-          fi
-
-          # Push the resulting state.
+          # Push the combined result.
           git push origin HEAD:main
