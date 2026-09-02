@@ -57,7 +57,24 @@ ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 def load_json(path: Path, fallback):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else fallback
+    """Load JSON safely; treat an empty file as the fallback value."""
+    if not path.exists():
+        return fallback
+
+    raw = path.read_text(encoding="utf-8").strip()
+
+    # An empty JSON file is not valid JSON. This commonly happens when
+    # shortlist.json is cleared manually before a fresh backfill.
+    if not raw:
+        return fallback
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Invalid JSON in {path}: {error}. "
+            f"Replace it with valid JSON (for an empty shortlist use [])."
+        ) from error
 
 
 def save_json(path: Path, value) -> None:
